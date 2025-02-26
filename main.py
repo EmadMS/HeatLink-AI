@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
-
+from datetime import datetime
 # Configuration
 PORT = 8080
 POLLING_RATE = 3  # Fetch weather data every 3 hours
@@ -43,8 +43,8 @@ class HeatingPredictor(nn.Module):
 
 model = HeatingPredictor()
 try:
-    if os.path.exists("instance/heating_model.pth"):
-        model.load_state_dict(torch.load("instance/heating_model.pth"))
+    if os.path.exists("instance/boiler_model.pth"):
+        model.load_state_dict(torch.load("instance/boiler_model.pth"))
         model.eval()
         print("AI Model Loaded Successfully.")
     else:
@@ -137,12 +137,18 @@ def predict_boiler():
     with open("instance/weather_data.json", "r") as file:
         weather_data = json.load(file)
 
-    outside_temp = weather_data["hourly"]["temperature_2m"][0]
-    apparent_temp = weather_data["hourly"]["apparent_temperature"][0]
-    future_temp_change = weather_data["hourly"]["temperature_2m"][3] - outside_temp  # Temp change in 3 hrs
-    precipitation = weather_data["hourly"]["precipitation"][0]
-    time_sin = np.sin(2 * np.pi * int(weather_data["hourly"]["time"][0][11:13]) / 24)
-    time_cos = np.cos(2 * np.pi * int(weather_data["hourly"]["time"][0][11:13]) / 24)
+    # Get the current hour's index
+    current_hour = datetime.utcnow().hour  # UTC hour index
+
+    outside_temp = weather_data["hourly"]["temperature_2m"][current_hour]
+    apparent_temp = weather_data["hourly"]["apparent_temperature"][current_hour]
+    future_temp_change = weather_data["hourly"]["temperature_2m"][current_hour + 3] - outside_temp  # Change in 3 hrs
+    precipitation = weather_data["hourly"]["precipitation"][current_hour]
+
+    # Convert time to sine and cosine encoding
+    time_sin = np.sin(2 * np.pi * current_hour / 24)
+    time_cos = np.cos(2 * np.pi * current_hour / 24)
+
 
     # Normalize inputs (Example: Min-Max Scaling)
     min_temp, max_temp = 0, 40  # Example min/max values for temperatures (modify according to your dataset)
@@ -157,9 +163,9 @@ def predict_boiler():
     with torch.no_grad():  # Disable gradient calculation for inference
         output = model(input_data)  # Model output is a tensor of shape (1, 2)
     
-    # Extract the run time and boiler temperature from the output tensor
-    predicted_run_time = output[0][0].item()  # The first element is the predicted run time (in minutes)
-    predicted_boiler_temp = output[0][1].item()  # The second element is the predicted boiler temperature (in °C)
+    predicted_run_time = max(output[0][0].item(), 0)  # Prevent negative runtime
+    predicted_boiler_temp = max(output[0][1].item(), 0)  # Prevent negative temperature if needed
+
 
     # Denormalize output if necessary (if the model outputs are normalized)
     predicted_run_time = predicted_run_time * 60  # Example: If run time was scaled to hours, scale it back to minutes
@@ -168,7 +174,7 @@ def predict_boiler():
     predicted_energy_usage = (predicted_run_time * predicted_boiler_temp) / 1000  # Adjust based on your system's energy formula
 
     return jsonify({
-        'room_temperature': room_temp,
+        'room_temperature': round(room_temp, 2),
         'outside_temperature': outside_temp,
         'predicted_run_time_minutes': round(predicted_run_time, 3),
         'predicted_boiler_temperature': round(predicted_boiler_temp, 1),
